@@ -180,24 +180,38 @@ def extrair_dados_embarque(linhas):
 # =============================================================================
 #  GERADOR DE EXCEL (ADAPTADO PARA DOWNLOAD WEB)
 # =============================================================================
-def gerar_excel_colorido(dados, headers):
+def gerar_excel_colorido(dados, headers_param=None):
     output = io.BytesIO()
     df = pd.DataFrame(dados)
     
-    # Criamos o arquivo usando o motor openpyxl
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Escreve os dados base
         df.to_excel(writer, index=False, sheet_name='Auditoria')
         
         workbook  = writer.book
         worksheet = writer.sheets['Auditoria']
         
-        # Definição das cores
+        # ==========================================
+        # 1. FORMATAR O CABEÇALHO (O seu roxo original)
+        # ==========================================
+        fill_cab = PatternFill(start_color="5C2EE9", end_color="5C2EE9", fill_type="solid")
+        font_cab = Font(color="FFFFFF", bold=True)
+        
+        for col_num in range(1, len(df.columns) + 1):
+            cell = worksheet.cell(row=1, column=col_num)
+            cell.fill = fill_cab
+            cell.font = font_cab
+
+        # ==========================================
+        # 2. PINTAR AS DIVERGÊNCIAS
+        # ==========================================
         fill_verde = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
         fill_vermelho = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
         fill_amarelo = PatternFill(start_color="F4D03F", end_color="F4D03F", fill_type="solid")
 
-        # Mapeia as colunas pelo nome para encontrar a posição de 'Componente' e 'Status'
         cols = {col: i + 1 for i, col in enumerate(df.columns)}
+        start_col = cols.get('Componente', 1)
+        end_col = cols.get('Status', len(df.columns))
         
         for row_idx, row_data in enumerate(df.itertuples(), start=2):
             status = str(row_data.Status).upper()
@@ -211,11 +225,26 @@ def gerar_excel_colorido(dados, headers):
                 target_fill = fill_amarelo
             
             if target_fill:
-                # Pinta do 'Componente' até o 'Status'
-                start_col = cols.get('Componente', 1)
-                end_col = cols.get('Status', len(df.columns))
                 for col_idx in range(start_col, end_col + 1):
                     worksheet.cell(row=row_idx, column=col_idx).fill = target_fill
+
+        # ==========================================
+        # 3. FILTRO AUTOMÁTICO E LARGURA DE COLUNAS
+        # ==========================================
+        # Coloca o filtro englobando toda a tabela gerada
+        worksheet.auto_filter.ref = worksheet.dimensions
+        
+        # Ajusta a largura para não ficar tudo espremido
+        for col in worksheet.columns:
+            max_len = 0
+            column_letter = col[0].column_letter
+            for cell in col:
+                try: 
+                    if len(str(cell.value)) > max_len: 
+                        max_len = len(str(cell.value))
+                except: 
+                    pass
+            worksheet.column_dimensions[column_letter].width = min(max_len + 2, 40)
 
     return output.getvalue()
 
@@ -264,4 +293,5 @@ if modulo == "Auditoria de Frete":
                         excel = gerar_excel_bytes(dados, headers)
 
                         st.download_button("⬇️ Baixar Excel Analítico", data=excel, file_name="Auditoria_Embarques.xlsx")
+
 

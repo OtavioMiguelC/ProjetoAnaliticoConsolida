@@ -196,7 +196,7 @@ def gerar_excel_colorido(dados, headers):
         fill_vermelho = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
         fill_amarelo = PatternFill(start_color="F4D03F", end_color="F4D03F", fill_type="solid")
 
-        # Mapeia as colunas pelo nome para não errar a posição
+        # Mapeia as colunas pelo nome para encontrar a posição de 'Componente' e 'Status'
         cols = {col: i + 1 for i, col in enumerate(df.columns)}
         
         for row_idx, row_data in enumerate(df.itertuples(), start=2):
@@ -211,7 +211,7 @@ def gerar_excel_colorido(dados, headers):
                 target_fill = fill_amarelo
             
             if target_fill:
-                # Pinta da coluna 'Componente' até 'Status'
+                # Pinta do 'Componente' até o 'Status'
                 start_col = cols.get('Componente', 1)
                 end_col = cols.get('Status', len(df.columns))
                 for col_idx in range(start_col, end_col + 1):
@@ -246,7 +246,7 @@ if modulo == "Auditoria de Frete":
                         st.dataframe(df, use_container_width=True)
                         
                         headers = ["CT-e", "Emissão CT-e", "NF", "Emissão NF", "Remetente", "Destinatário", "Peso", "Cub", "Valor NF", "Componente", "Previsto (R$)", "Realizado (R$)", "Diferença (R$)", "Status"]
-                        excel = gerar_excel_bytes(dados, headers)
+                        excel = gerar_excel_colorido(dados, headers)
                         st.download_button("⬇️ Baixar Excel Analítico", data=excel, file_name="Auditoria_CTE.xlsx")
 
     with tab_emb:
@@ -264,3 +264,4 @@ if modulo == "Auditoria de Frete":
                         excel = gerar_excel_bytes(dados, headers)
 
                         st.download_button("⬇️ Baixar Excel Analítico", data=excel, file_name="Auditoria_Embarques.xlsx")
+

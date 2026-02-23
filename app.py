@@ -1,10 +1,9 @@
 import streamlit as st
 import pandas as pd
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font
-from openpyxl.utils import get_column_letter
 import io
 import datetime
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font
 
 # =============================================================================
 #  CONFIGURAÇÕES DA PÁGINA (ESTILO WEB)
@@ -181,28 +180,43 @@ def extrair_dados_embarque(linhas):
 # =============================================================================
 #  GERADOR DE EXCEL (ADAPTADO PARA DOWNLOAD WEB)
 # =============================================================================
-def gerar_excel_bytes(dados, headers):
+def gerar_excel_colorido(dados, headers):
     output = io.BytesIO()
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Analítico Consolida"
-    ws.append(headers)
+    df = pd.DataFrame(dados)
     
-    fill_cab = PatternFill(start_color="5C2EE9", end_color="5C2EE9", fill_type="solid")
-    font_cab = Font(color="FFFFFF", bold=True)
-    
-    for col_num in range(1, len(headers) + 1):
-        cell = ws.cell(row=1, column=col_num)
-        cell.fill = fill_cab; cell.font = font_cab
+    # Criamos o arquivo usando o motor openpyxl
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Auditoria')
+        
+        workbook  = writer.book
+        worksheet = writer.sheets['Auditoria']
+        
+        # Definição das cores
+        fill_verde = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        fill_vermelho = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+        fill_amarelo = PatternFill(start_color="F4D03F", end_color="F4D03F", fill_type="solid")
 
-    for i, linha_dict in enumerate(dados, start=2):
-        valores = list(linha_dict.values())
-        ws.append(valores)
-        # Formatação básica de moeda nas colunas financeiras (últimas 3 antes do status)
-        for col_off in range(2, 5):
-            ws.cell(row=i, column=len(headers)-col_off+1).number_format = '#,##0.00'
+        # Mapeia as colunas pelo nome para não errar a posição
+        cols = {col: i + 1 for i, col in enumerate(df.columns)}
+        
+        for row_idx, row_data in enumerate(df.itertuples(), start=2):
+            status = str(row_data.Status).upper()
+            target_fill = None
+            
+            if "OK" in status:
+                target_fill = fill_verde
+            elif "A MAIOR" in status:
+                target_fill = fill_vermelho
+            elif "A MENOR" in status:
+                target_fill = fill_amarelo
+            
+            if target_fill:
+                # Pinta da coluna 'Componente' até 'Status'
+                start_col = cols.get('Componente', 1)
+                end_col = cols.get('Status', len(df.columns))
+                for col_idx in range(start_col, end_col + 1):
+                    worksheet.cell(row=row_idx, column=col_idx).fill = target_fill
 
-    wb.save(output)
     return output.getvalue()
 
 # =============================================================================
@@ -248,4 +262,5 @@ if modulo == "Auditoria de Frete":
                         
                         headers = ["Embarque ID", "Data Criação", "Transportadora", "Origem", "Destino", "Componente", "Previsto (R$)", "Realizado (R$)", "Diferença (R$)", "Status"]
                         excel = gerar_excel_bytes(dados, headers)
+
                         st.download_button("⬇️ Baixar Excel Analítico", data=excel, file_name="Auditoria_Embarques.xlsx")

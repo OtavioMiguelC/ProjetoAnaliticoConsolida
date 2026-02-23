@@ -290,8 +290,9 @@ if modulo == "Auditoria de Frete":
                         st.dataframe(pd.DataFrame(dados), use_container_width=True)
                         
                         headers = ["Embarque ID", "Data Criação", "Transportadora", "Origem", "Destino", "Componente", "Previsto (R$)", "Realizado (R$)", "Diferença (R$)", "Status"]
-                        excel = gerar_excel_bytes(dados, headers)
+                        excel = gerar_excel_colorido(dados, headers)
 
                         st.download_button("⬇️ Baixar Excel Analítico", data=excel, file_name="Auditoria_Embarques.xlsx")
+
 
 

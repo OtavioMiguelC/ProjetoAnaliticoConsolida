@@ -24,7 +24,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # =============================================================================
-#  FUNÇÕES DE UTILIDADE
+#  FUNÇÕES DE UTILIDADE E EXTRAÇÃO
 # =============================================================================
 def formatar_data_excel_somente_data(val):
     try:
@@ -48,9 +48,6 @@ def processar_arquivo_bruto(uploaded_file):
         st.error(f"Erro ao ler arquivo: {e}")
         return None
 
-# =============================================================================
-#  LÓGICA DE EXTRAÇÃO - CT-e (ORIGINAL)
-# =============================================================================
 def extrair_dados_pre_conhecimento(linhas):
     dados_analiticos = []
     current_cte, current_emissao_cte, current_nf, current_emissao_nf = "", "", "", ""
@@ -59,7 +56,6 @@ def extrair_dados_pre_conhecimento(linhas):
     for i, row in enumerate(linhas):
         linha = [str(x).strip() for x in row]
         if not any(linha): continue
-        
         if "Número" in linha and "CT-e" in linha:
             idx_cte = linha.index("CT-e")
             idx_emis_cte = linha.index("Emissão") if "Emissão" in linha else -1
@@ -118,7 +114,6 @@ def extrair_dados_pre_conhecimento(linhas):
                     if diff > 0.01: status = "DIVERGÊNCIA (A MAIOR)"
                     elif diff < -0.01: status = "DIVERGÊNCIA (A MENOR)"
                     if "PEDÁGIO" in nome.upper() and diff > 0.01: status = "ALERTA: PEDÁGIO A MAIOR!"
-                        
                     dados_analiticos.append({
                         "CT-e": current_cte, "Emissão CT-e": current_emissao_cte,
                         "NF": current_nf, "Emissão NF": current_emissao_nf,
@@ -129,9 +124,6 @@ def extrair_dados_pre_conhecimento(linhas):
                 j += 1
     return dados_analiticos
 
-# =============================================================================
-#  LÓGICA DE EXTRAÇÃO - EMBARQUE
-# =============================================================================
 def extrair_dados_embarque(linhas):
     dados_embarque = []
     cur_emb, cur_dt_criacao, cur_transp, cur_origem, cur_destino = "", "", "", "", ""
@@ -179,176 +171,126 @@ def extrair_dados_embarque(linhas):
     return dados_embarque
 
 # =============================================================================
-#  GERAÇÃO DE EXCEL (CT-E - ORIGINAL)
+#  GERADORES DE EXCEL
 # =============================================================================
-def gerar_excel_colorido(dados, headers_param=None):
+def gerar_excel_colorido(df_local):
+    """Gera o arquivo ANALÍTICO PADRÃO (Colorido)"""
     output = io.BytesIO()
-    df = pd.DataFrame(dados)
-    
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Auditoria')
-        workbook  = writer.book
+        df_local.to_excel(writer, index=False, sheet_name='Auditoria')
         worksheet = writer.sheets['Auditoria']
         
+        # Estilo Cabeçalho
         fill_cab = PatternFill(start_color="5C2EE9", end_color="5C2EE9", fill_type="solid")
         font_cab = Font(color="FFFFFF", bold=True)
-        for col_num in range(1, len(df.columns) + 1):
+        for col_num in range(1, len(df_local.columns) + 1):
             cell = worksheet.cell(row=1, column=col_num)
             cell.fill = fill_cab
             cell.font = font_cab
 
+        # Cores Status
         fill_verde = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
         fill_vermelho = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
         fill_amarelo = PatternFill(start_color="F4D03F", end_color="F4D03F", fill_type="solid")
 
-        cols = {col: i + 1 for i, col in enumerate(df.columns)}
+        cols = {col: i + 1 for i, col in enumerate(df_local.columns)}
         start_col = cols.get('Componente', 1)
-        end_col = cols.get('Status', len(df.columns))
+        end_col = cols.get('Status', len(df_local.columns))
         
-        for row_idx, row_data in enumerate(df.itertuples(), start=2):
+        for row_idx, row_data in enumerate(df_local.itertuples(), start=2):
             status = str(row_data.Status).upper()
-            target_fill = None
-            if "OK" in status: target_fill = fill_verde
-            elif "A MAIOR" in status: target_fill = fill_vermelho
-            elif "A MENOR" in status: target_fill = fill_amarelo
-            
-            if target_fill:
-                for col_idx in range(start_col, end_col + 1):
-                    worksheet.cell(row=row_idx, column=col_idx).fill = target_fill
+            target_fill = fill_verde if "OK" in status else (fill_vermelho if "A MAIOR" in status else fill_amarelo)
+            for col_idx in range(start_col, end_col + 1):
+                worksheet.cell(row=row_idx, column=col_idx).fill = target_fill
 
         worksheet.auto_filter.ref = worksheet.dimensions
         for col in worksheet.columns:
-            max_len = 0
-            column_letter = col[0].column_letter
-            for cell in col:
-                try: 
-                    if len(str(cell.value)) > max_len: max_len = len(str(cell.value))
-                except: pass
-            worksheet.column_dimensions[column_letter].width = min(max_len + 2, 40)
-
+            max_len = max([len(str(cell.value)) for cell in col])
+            worksheet.column_dimensions[col[0].column_letter].width = min(max_len + 2, 40)
     return output.getvalue()
 
-# =============================================================================
-#  GERAÇÃO DE EXCEL CONSOLIDADO (EMBARQUES - NOVO)
-# =============================================================================
 def gerar_excel_observacoes(df_filtrado):
+    """Gera o NOVO arquivo CONSOLIDADO (Embarque | Observação)"""
     output = io.BytesIO()
-    
-    # Agrupa por embarque e junta os nomes dos componentes em uma string separada por " - "
+    # Agrupa e concatena componentes
     df_obs = df_filtrado.groupby('Embarque ID')['Componente'].apply(lambda x: " - ".join(x)).reset_index()
     df_obs.columns = ['Embarque', 'Observação']
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_obs.to_excel(writer, index=False, sheet_name='Divergencias')
-        worksheet = writer.sheets['Divergencias']
-        
+        df_obs.to_excel(writer, index=False, sheet_name='Resumo')
+        worksheet = writer.sheets['Resumo']
         fill_cab = PatternFill(start_color="5C2EE9", end_color="5C2EE9", fill_type="solid")
         font_cab = Font(color="FFFFFF", bold=True)
         for cell in worksheet[1]:
-            cell.fill = fill_cab
-            cell.font = font_cab
-            
+            cell.fill = fill_cab; cell.font = font_cab
         worksheet.column_dimensions['A'].width = 20
         worksheet.column_dimensions['B'].width = 80
-
     return output.getvalue()
 
 # =============================================================================
-#  INTERFACE DO USUÁRIO (STREAMLIT)
+#  INTERFACE STREAMLIT
 # =============================================================================
-st.sidebar.markdown("# 📊 CONSOLIDA")
-st.sidebar.markdown("### WORKSPACE")
+st.sidebar.markdown("# 📊 CONSOLIDA\n### WORKSPACE")
 st.sidebar.divider()
 modulo = st.sidebar.radio("Navegação", ["Auditoria de Frete"])
 
 if modulo == "Auditoria de Frete":
     st.title("Módulo de Extração Analítica")
-    st.caption("Faça o upload do seu relatório logístico para gerar alertas de divergências.")
-
     tab_cte, tab_emb = st.tabs(["📦 Pré-Conhecimentos (CT-e / NF)", "🚢 Embarques Globais"])
 
-    # -----------------------------------------------------------------------------
-    # ABA 1: CT-E (Comportamento Original Mantido)
-    # -----------------------------------------------------------------------------
     with tab_cte:
-        arquivo = st.file_uploader("Arraste o arquivo bruto aqui (CT-e)", type=['xlsx', 'csv'], key="u1")
-        if arquivo:
-            if st.button("🚀 Analisar Arquivo CT-e"):
-                linhas = processar_arquivo_bruto(arquivo)
-                if linhas:
-                    dados = extrair_dados_pre_conhecimento(linhas)
-                    if dados:
-                        st.success(f"Encontrados {len(dados)} itens analíticos!")
-                        df = pd.DataFrame(dados)
-                        st.dataframe(df, use_container_width=True)
-                        
-                        headers = ["CT-e", "Emissão CT-e", "NF", "Emissão NF", "Remetente", "Destinatário", "Peso", "Cub", "Valor NF", "Componente", "Previsto (R$)", "Realizado (R$)", "Diferença (R$)", "Status"]
-                        excel = gerar_excel_colorido(dados, headers)
-                        st.download_button("⬇️ Baixar Excel Analítico", data=excel, file_name="Auditoria_CTE.xlsx")
+        arquivo = st.file_uploader("Upload CT-e", type=['xlsx', 'csv'], key="u1")
+        if arquivo and st.button("🚀 Analisar Arquivo CT-e"):
+            linhas = processar_arquivo_bruto(arquivo)
+            if linhas:
+                dados = extrair_dados_pre_conhecimento(linhas)
+                if dados:
+                    df = pd.DataFrame(dados)
+                    st.success(f"Encontrados {len(dados)} itens!")
+                    st.dataframe(df, use_container_width=True)
+                    excel = gerar_excel_colorido(df)
+                    st.download_button("⬇️ Baixar Excel Analítico", data=excel, file_name="Auditoria_CTE.xlsx")
 
-    # -----------------------------------------------------------------------------
-    # ABA 2: EMBARQUES (Nova lógica de Filtro e Agrupamento)
-    # -----------------------------------------------------------------------------
     with tab_emb:
-        arquivo_emb = st.file_uploader("Arraste o arquivo bruto aqui (Embarques)", type=['xlsx', 'csv'], key="u2")
-
+        arquivo_emb = st.file_uploader("Upload Embarques", type=['xlsx', 'csv'], key="u2")
+        
         if arquivo_emb:
-            # Controle de estado para garantir que recarregue se o arquivo mudar
             if 'arquivo_emb_atual' not in st.session_state or st.session_state['arquivo_emb_atual'] != arquivo_emb.name:
                 st.session_state['arquivo_emb_atual'] = arquivo_emb.name
-                if 'dados_emb_brutos' in st.session_state:
-                    del st.session_state['dados_emb_brutos']
+                if 'dados_emb_brutos' in st.session_state: del st.session_state['dados_emb_brutos']
 
             if st.button("🚀 Analisar Arquivo de Embarques"):
-                with st.spinner("Processando..."):
-                    linhas = processar_arquivo_bruto(arquivo_emb)
-                    if linhas:
-                        dados = extrair_dados_embarque(linhas)
-                        if dados:
-                            st.session_state['dados_emb_brutos'] = dados
-                            st.success(f"Arquivo lido! {len(dados)} componentes encontrados.")
-
-            # Se já analisou e tem dados na memória, mostra a interface de filtros
+                linhas = processar_arquivo_bruto(arquivo_emb)
+                if linhas:
+                    dados = extrair_dados_embarque(linhas)
+                    if dados: st.session_state['dados_emb_brutos'] = dados
+            
             if 'dados_emb_brutos' in st.session_state:
-                df_original = pd.DataFrame(st.session_state['dados_emb_brutos'])
-                
+                df_orig = pd.DataFrame(st.session_state['dados_emb_brutos'])
                 st.divider()
-                st.subheader("⚙️ Filtros de Componentes e Divergências")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    todos_componentes = df_original['Componente'].unique().tolist()
-                    comps_selecionados = st.multiselect(
-                        "Selecione os Componentes para manter no relatório:", 
-                        options=todos_componentes, 
-                        default=todos_componentes
-                    )
-                
-                with col2:
-                    tipo_div = st.selectbox(
-                        "Tipo de Divergência:", 
-                        ["Todas (A Maior, A Menor, Zero)", "Somente Divergências (Diferente de OK)", "Somente A Maior", "Somente A Menor"]
-                    )
+                st.subheader("⚙️ Filtros")
+                c1, c2 = st.columns(2)
+                with c1:
+                    sel_comp = st.multiselect("Componentes:", options=df_orig['Componente'].unique().tolist(), default=df_orig['Componente'].unique().tolist())
+                with c2:
+                    sel_div = st.selectbox("Divergência:", ["Todas", "Diferente de OK", "Somente A Maior", "Somente A Menor"])
 
-                # Aplicação dos filtros
-                df_filtrado = df_original[df_original['Componente'].isin(comps_selecionados)].copy()
-                
-                if tipo_div == "Somente Divergências (Diferente de OK)":
-                    df_filtrado = df_filtrado[df_filtrado['Status'] != "OK"]
-                elif tipo_div == "Somente A Maior":
-                    df_filtrado = df_filtrado[df_filtrado['Status'] == "DIVERGÊNCIA (A MAIOR)"]
-                elif tipo_div == "Somente A Menor":
-                    df_filtrado = df_filtrado[df_filtrado['Status'] == "DIVERGÊNCIA (A MENOR)"]
+                df_f = df_orig[df_orig['Componente'].isin(sel_comp)].copy()
+                if sel_div == "Diferente de OK": df_f = df_f[df_f['Status'] != "OK"]
+                elif sel_div == "Somente A Maior": df_f = df_f[df_f['Status'] == "DIVERGÊNCIA (A MAIOR)"]
+                elif sel_div == "Somente A Menor": df_f = df_f[df_f['Status'] == "DIVERGÊNCIA (A MENOR)"]
 
-                st.write(f"**Registros mantidos após filtros:** {len(df_filtrado)}")
-                st.dataframe(df_filtrado, use_container_width=True)
+                st.dataframe(df_f, use_container_width=True)
 
-                if not df_filtrado.empty:
+                if not df_f.empty:
                     st.divider()
-                    excel_obs = gerar_excel_observacoes(df_filtrado)
-                    st.download_button(
-                        label="📄 Baixar Planilha Consolidada (Embarque | Observação)",
-                        data=excel_obs,
-                        file_name=f"Divergencias_Agrupadas_{datetime.date.today()}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                    st.subheader("📥 Downloads Disponíveis")
+                    col_dl1, col_dl2 = st.columns(2)
+                    with col_dl1:
+                        # BOTÃO 1: PADRÃO COLORIDO
+                        excel_padrao = gerar_excel_colorido(df_f)
+                        st.download_button("⬇️ Baixar Relatório Analítico (Padrão)", data=excel_padrao, file_name="Auditoria_Embarques_Detalhado.xlsx")
+                    with col_dl2:
+                        # BOTÃO 2: NOVO CONSOLIDADO
+                        excel_resumo = gerar_excel_observacoes(df_f)
+                        st.download_button("⬇️ Baixar Resumo (Embarque | Obs)", data=excel_resumo, file_name="Divergencias_Consolidadas.xlsx")

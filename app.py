@@ -179,8 +179,40 @@ def formatar_linha_observacao(row):
     return f"{row['Componente']} - {sufixo}"
 
 # =============================================================================
-# GERADOR DE EXCEL UNIFICADO
+# GERADORES DE EXCEL
 # =============================================================================
+def gerar_excel_colorido(df_local):
+    # Gerador original usado na aba CT-e
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_local.to_excel(writer, index=False, sheet_name='Auditoria')
+        ws = writer.sheets['Auditoria']
+        
+        fill_cab = PatternFill(start_color="5C2EE9", end_color="5C2EE9", fill_type="solid")
+        font_cab = Font(color="FFFFFF", bold=True)
+        for cell in ws[1]:
+            cell.fill = fill_cab; cell.font = font_cab
+
+        fill_verde = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        fill_vermelho = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+        fill_amarelo = PatternFill(start_color="F4D03F", end_color="F4D03F", fill_type="solid")
+
+        cols = {col: i + 1 for i, col in enumerate(df_local.columns)}
+        start_col = cols.get('Componente', 1)
+        end_col = cols.get('Status', len(df_local.columns))
+        
+        for row_idx, row_data in enumerate(df_local.itertuples(), start=2):
+            status = str(row_data.Status).upper()
+            target_fill = fill_verde if "OK" in status else (fill_vermelho if "A MAIOR" in status else fill_amarelo)
+            for col_idx in range(start_col, end_col + 1):
+                ws.cell(row=row_idx, column=col_idx).fill = target_fill
+
+        ws.auto_filter.ref = ws.dimensions
+        for col in ws.columns:
+            max_len = max([len(str(cell.value)) for cell in col])
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 40)
+    return output.getvalue()
+
 def gerar_excel_unificado_embarque(df_final):
     output = io.BytesIO()
     
@@ -188,7 +220,8 @@ def gerar_excel_unificado_embarque(df_final):
     df_obs_input = df_final[df_final['Status'] != "OK"].copy()
     if not df_obs_input.empty:
         df_obs_input['Linha_Formatada'] = df_obs_input.apply(formatar_linha_observacao, axis=1)
-        df_resumo = df_obs_input.groupby('Embarque ID')['Linha_Formatada'].apply(lambda x: " | ".join(x)).reset_index()
+        # O uso do x.unique() garante que strings iguais não se repitam no mesmo Embarque ID
+        df_resumo = df_obs_input.groupby('Embarque ID')['Linha_Formatada'].apply(lambda x: " | ".join(x.unique())).reset_index()
         df_resumo.columns = ['Embarque', 'Observação']
     else:
         df_resumo = pd.DataFrame(columns=['Embarque', 'Observação'])
@@ -236,7 +269,10 @@ if modulo == "Auditoria de Frete":
             if linhas:
                 dados_cte = extrair_dados_pre_conhecimento(linhas)
                 if dados_cte:
-                    st.dataframe(pd.DataFrame(dados_cte), use_container_width=True)
+                    df_cte = pd.DataFrame(dados_cte)
+                    st.dataframe(df_cte, use_container_width=True)
+                    excel_cte = gerar_excel_colorido(df_cte)
+                    st.download_button("⬇️ Baixar Excel Analítico (CT-e)", data=excel_cte, file_name="Auditoria_CTE.xlsx")
 
     with tab_emb:
         arquivo_emb = st.file_uploader("Upload Embarques", type=['xlsx', 'csv'], key="u_emb")
@@ -272,7 +308,6 @@ if modulo == "Auditoria de Frete":
 
                 if not df_final.empty:
                     st.divider()
-                    # Exporta exatamente o que está na tela (df_final)
                     excel_data = gerar_excel_unificado_embarque(df_final)
                     st.download_button(
                         label="⬇️ Baixar Relatório Unificado (Analítico + Observações)",

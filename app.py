@@ -47,6 +47,83 @@ def processar_arquivo_bruto(uploaded_file):
         st.error(f"Erro ao ler arquivo: {e}")
         return None
 
+# EXTRAÇÃO CT-E (RESTAURADA)
+def extrair_dados_pre_conhecimento(linhas):
+    dados_analiticos = []
+    current_cte, current_emissao_cte, current_nf, current_emissao_nf = "", "", "", ""
+    current_remetente, current_destinatario, current_peso, current_cub, current_valor = "", "", "", "", ""
+    
+    for i, row in enumerate(linhas):
+        linha = [str(x).strip() for x in row]
+        if not any(linha): continue
+        if "Número" in linha and "CT-e" in linha:
+            idx_cte = linha.index("CT-e")
+            idx_emis_cte = linha.index("Emissão") if "Emissão" in linha else -1
+            if i + 1 < len(linhas):
+                sub = [str(x).strip() for x in linhas[i+1]]
+                if len(sub) > idx_cte:
+                    cands = [str(x).strip() for x in sub[idx_cte:idx_cte+5] if str(x).strip()]
+                    if cands: current_cte = cands[0]
+                if idx_emis_cte != -1 and len(sub) > idx_emis_cte:
+                    cands_em = [str(x).strip() for x in sub[idx_emis_cte:idx_emis_cte+5] if str(x).strip()]
+                    if cands_em: current_emissao_cte = formatar_data_excel_somente_data(cands_em[0])
+                current_nf, current_emissao_nf, current_peso, current_cub, current_valor = "", "", "", "", ""
+
+        for cell in linha:
+            if "Remetente:" in cell:
+                cands = [x for x in linha if x and "Remetente" not in x]
+                if cands: current_remetente = cands[0].replace('\n', ' ')
+            if "Destinatário:" in cell:
+                cands = [x for x in linha if x and "Destinatário" not in x]
+                if cands: current_destinatario = cands[0].replace('\n', ' ')
+                
+        if "Peso" in linha and "Cub." in linha and "Valor" in linha:
+            idx_peso, idx_cub, idx_valor = linha.index("Peso"), linha.index("Cub."), linha.index("Valor")
+            idx_emis_nf = linha.index("Emissão") if "Emissão" in linha else -1
+            for j in range(i+1, min(i+5, len(linhas))):
+                sub = [str(x).strip() for x in linhas[j]]
+                if "NF" in sub:
+                    idx_nf = sub.index("NF")
+                    c_nf = [x for x in sub[idx_nf+1:] if x]
+                    if c_nf: current_nf = c_nf[0]
+                    if idx_emis_nf != -1 and len(sub) > idx_emis_nf:
+                        c_em_nf = [x for x in sub[idx_emis_nf:idx_emis_nf+5] if x]
+                        if c_em_nf: current_emissao_nf = formatar_data_excel_somente_data(c_em_nf[0])
+                    try: current_peso = [x for x in sub[max(0, idx_peso-1):idx_peso+3] if x][0]
+                    except: pass
+                    try: current_cub = [x for x in sub[max(0, idx_cub-1):idx_cub+3] if x][0]
+                    except: pass
+                    try: current_valor = [x for x in sub[max(0, idx_valor-1):idx_valor+3] if x][0]
+                    except: pass
+                    break
+
+        if "Frete calculado" in linha and "Frete realizado" in linha:
+            idx_calc, idx_real = linha.index("Frete calculado"), linha.index("Frete realizado")
+            j = i + 1
+            while j < len(linhas):
+                sub = [str(x).strip() for x in linhas[j]]
+                if "Total do Frete" in sub or "Total de documentos" in sub or ("Número" in sub and "CT-e" in sub): break
+                itens = [x for x in sub[:10] if x]
+                if itens and len(sub) > max(idx_calc, idx_real):
+                    nome = itens[0]
+                    try: calc = float(sub[idx_calc]); real = float(sub[idx_real])
+                    except: calc, real = 0.0, 0.0
+                    diff = real - calc
+                    status = "OK"
+                    if diff > 0.01: status = "DIVERGÊNCIA (A MAIOR)"
+                    elif diff < -0.01: status = "DIVERGÊNCIA (A MENOR)"
+                    if "PEDÁGIO" in nome.upper() and diff > 0.01: status = "ALERTA: PEDÁGIO A MAIOR!"
+                    dados_analiticos.append({
+                        "CT-e": current_cte, "Emissão CT-e": current_emissao_cte,
+                        "NF": current_nf, "Emissão NF": current_emissao_nf,
+                        "Remetente": current_remetente, "Destinatário": current_destinatario,
+                        "Peso": current_peso, "Cub": current_cub, "Valor NF": current_valor,
+                        "Componente": nome, "Calculado": calc, "Realizado": real, "Diferença": diff, "Status": status
+                    })
+                j += 1
+    return dados_analiticos
+
+# EXTRAÇÃO EMBARQUE
 def extrair_dados_embarque(linhas):
     dados_embarque = []
     cur_emb, cur_dt_criacao, cur_transp, cur_origem, cur_destino = "", "", "", "", ""
@@ -103,50 +180,88 @@ def definir_status(diff, tolerancia):
     else:
         return "DIVERGÊNCIA (A MENOR)"
 
+def formatar_linha_observacao(row):
+    comp = row['Componente']
+    status = row['Status']
+    if "A MAIOR" in status:
+        return f"{comp} - Divergência a Maior"
+    elif "A MENOR" in status:
+        return f"{comp} - Divergência a Menor"
+    return f"{comp} - {status}"
+
 # =============================================================================
-# GERADOR DE EXCEL UNIFICADO (DUAS ABAS)
+# GERADORES DE EXCEL
 # =============================================================================
+def gerar_excel_colorido(df_local):
+    # Gerador original usado na aba CT-e
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_local.to_excel(writer, index=False, sheet_name='Auditoria')
+        ws = writer.sheets['Auditoria']
+        
+        fill_cab = PatternFill(start_color="5C2EE9", end_color="5C2EE9", fill_type="solid")
+        font_cab = Font(color="FFFFFF", bold=True)
+        for cell in ws[1]:
+            cell.fill = fill_cab; cell.font = font_cab
+
+        fill_verde = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        fill_vermelho = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+        fill_amarelo = PatternFill(start_color="F4D03F", end_color="F4D03F", fill_type="solid")
+
+        cols = {col: i + 1 for i, col in enumerate(df_local.columns)}
+        start_col = cols.get('Componente', 1)
+        end_col = cols.get('Status', len(df_local.columns))
+        
+        for row_idx, row_data in enumerate(df_local.itertuples(), start=2):
+            status = str(row_data.Status).upper()
+            target_fill = fill_verde if "OK" in status else (fill_vermelho if "A MAIOR" in status else fill_amarelo)
+            for col_idx in range(start_col, end_col + 1):
+                ws.cell(row=row_idx, column=col_idx).fill = target_fill
+
+        ws.auto_filter.ref = ws.dimensions
+        for col in ws.columns:
+            max_len = max([len(str(cell.value)) for cell in col])
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 40)
+    return output.getvalue()
+
 def gerar_excel_unificado_embarque(df_analitico):
     output = io.BytesIO()
     
-    # Preparar dados da segunda aba (Observações)
-    # Somente o que não for OK entra na observação
-    df_obs_input = df_analitico[df_analitico['Status'] != "OK"]
-    df_resumo = df_obs_input.groupby('Embarque ID')['Componente'].apply(lambda x: " - ".join(x)).reset_index()
-    df_resumo.columns = ['Embarque', 'Observação']
+    # Prepara dados aba 2 (Observações)
+    df_obs_input = df_analitico[df_analitico['Status'] != "OK"].copy()
+    if not df_obs_input.empty:
+        df_obs_input['Linha_Formatada'] = df_obs_input.apply(formatar_linha_observacao, axis=1)
+        # Usa " | " para separar componentes diferentes no mesmo embarque para não poluir visualmente com muitos traços
+        df_resumo = df_obs_input.groupby('Embarque ID')['Linha_Formatada'].apply(lambda x: " | ".join(x)).reset_index()
+        df_resumo.columns = ['Embarque', 'Observação']
+    else:
+        df_resumo = pd.DataFrame(columns=['Embarque', 'Observação'])
 
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # ABA 1: ANALÍTICO
         df_analitico.to_excel(writer, index=False, sheet_name='Analítico Detalhado')
         ws1 = writer.sheets['Analítico Detalhado']
-        
-        # ABA 2: OBSERVAÇÕES
         df_resumo.to_excel(writer, index=False, sheet_name='Resumo Observações')
         ws2 = writer.sheets['Resumo Observações']
 
-        # Estilização
         fill_cab = PatternFill(start_color="5C2EE9", end_color="5C2EE9", fill_type="solid")
         font_cab = Font(color="FFFFFF", bold=True)
         fill_vermelho = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
         fill_amarelo = PatternFill(start_color="F4D03F", end_color="F4D03F", fill_type="solid")
         fill_verde = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
 
-        # Formatar Aba 1
         for cell in ws1[1]:
             cell.fill = fill_cab; cell.font = font_cab
         
         for row_idx, row_data in enumerate(df_analitico.itertuples(), start=2):
             status = str(row_data.Status)
             target_fill = fill_verde if status == "OK" else (fill_vermelho if "A MAIOR" in status else fill_amarelo)
-            # Pintar colunas de valor e status
-            for col_idx in range(6, 11): # Componente até Status
+            for col_idx in range(6, 11):
                 ws1.cell(row=row_idx, column=col_idx).fill = target_fill
 
-        # Formatar Aba 2
         for cell in ws2[1]:
             cell.fill = fill_cab; cell.font = font_cab
         ws2.column_dimensions['A'].width = 20
-        ws2.column_dimensions['B'].width = 80
+        ws2.column_dimensions['B'].width = 100
 
     return output.getvalue()
 
@@ -161,10 +276,22 @@ if modulo == "Auditoria de Frete":
     st.title("Módulo de Extração Analítica")
     tab_cte, tab_emb = st.tabs(["📦 Pré-Conhecimentos", "🚢 Embarques Globais"])
 
+    # ABA 1: PRÉ-CONHECIMENTOS (CT-E)
     with tab_cte:
-        st.info("Funcionalidade original mantida para CT-e.")
-        # (Código de CT-e omitido aqui para brevidade, mas permanece igual ao seu original)
+        st.info("Extração analítica baseada no relatório de CT-e.")
+        arquivo_cte = st.file_uploader("Upload CT-e", type=['xlsx', 'csv'], key="u_cte")
+        if arquivo_cte and st.button("🚀 Analisar Arquivo CT-e"):
+            linhas = processar_arquivo_bruto(arquivo_cte)
+            if linhas:
+                dados_cte = extrair_dados_pre_conhecimento(linhas)
+                if dados_cte:
+                    df_cte = pd.DataFrame(dados_cte)
+                    st.success(f"Encontrados {len(dados_cte)} itens!")
+                    st.dataframe(df_cte, use_container_width=True)
+                    excel_cte = gerar_excel_colorido(df_cte)
+                    st.download_button("⬇️ Baixar Excel Analítico (CT-e)", data=excel_cte, file_name="Auditoria_CTE.xlsx")
 
+    # ABA 2: EMBARQUES
     with tab_emb:
         arquivo_emb = st.file_uploader("Upload Embarques", type=['xlsx', 'csv'], key="u_emb")
         
@@ -186,30 +313,24 @@ if modulo == "Auditoria de Frete":
                 with c2:
                     sel_div = st.selectbox("Mostrar na Tela:", ["Todas", "Divergências", "A Maior", "A Menor"])
                 with c3:
-                    tolerancia = st.number_input("Tolerância (R$):", min_value=0.0, value=0.01, step=0.01, help="Diferenças abaixo deste valor serão consideradas OK.")
+                    tolerancia = st.number_input("Tolerância (R$):", min_value=0.0, value=0.01, step=0.01, help="Diferenças até este valor são ignoradas.")
 
-                # Aplicar Tolerância e Status dinamicamente
                 df_f = df_base[df_base['Componente'].isin(sel_comp)].copy()
                 df_f['Status'] = df_f['Diferença'].apply(lambda x: definir_status(x, tolerancia))
 
-                # Filtrar visualização da tela
                 if sel_div == "Divergências": df_f_view = df_f[df_f['Status'] != "OK"]
                 elif sel_div == "A Maior": df_f_view = df_f[df_f['Status'] == "DIVERGÊNCIA (A MAIOR)"]
                 elif sel_div == "A Menor": df_f_view = df_f[df_f['Status'] == "DIVERGÊNCIA (A MENOR)"]
                 else: df_f_view = df_f
 
-                st.write(f"**Itens Analisados:** {len(df_f_view)}")
                 st.dataframe(df_f_view, use_container_width=True)
 
                 if not df_f.empty:
                     st.divider()
-                    # Gerar arquivo único com as duas abas
                     excel_final = gerar_excel_unificado_embarque(df_f)
-                    
                     st.download_button(
                         label="⬇️ Baixar Relatório Unificado (Analítico + Observações)",
                         data=excel_final,
                         file_name=f"Auditoria_Embarque_Unificada_{datetime.date.today()}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
-                    st.caption("O arquivo contém a aba 'Analítico Detalhado' e a aba 'Resumo Observações' (agrupada por embarque).")

@@ -50,7 +50,7 @@ def processar_arquivo_bruto(uploaded_file):
 def extrair_dados_pre_conhecimento(linhas):
     dados_analiticos = []
     current_cte, current_emissao_cte, current_nf, current_emissao_nf = "", "", "", ""
-    current_remetente, current_destinatario, current_peso, current_cub, current_valor = "", "", "", "", ""
+    current_remetente, current_destinatario, current_peso, current_cub, current_valor = "", "", "", ""
     
     for i, row in enumerate(linhas):
         linha = [str(x).strip() for x in row]
@@ -128,9 +128,7 @@ def extrair_dados_embarque(linhas):
         linha = [str(x).strip() for x in row]
         if not any(linha): continue
         
-        # CABEÇALHO DO EMBARQUE: Alterado para priorizar a coluna "Número" do espelho em vez de "Embarque" (ID)
         if "Embarque" in linha and "Transportadora" in linha:
-            # Pega o Número se existir, senão faz fallback para Embarque
             idx_num_real = linha.index("Número") if "Número" in linha else linha.index("Embarque")
             idx_dt = linha.index("Dt. criação") if "Dt. criação" in linha else -1
             idx_transp = linha.index("Transportadora")
@@ -180,6 +178,8 @@ def definir_status(diff, tolerancia):
 
 def formatar_linha_observacao(row):
     status = row['Status']
+    if status == "OK":
+        return "OK"
     sufixo = "Divergencia a Maior" if "A MAIOR" in status else "Divergencia a Menor"
     return f"{row['Componente']} - {sufixo}"
 
@@ -220,9 +220,12 @@ def gerar_excel_colorido(df_local):
 def gerar_excel_unificado_embarque(df_final):
     output = io.BytesIO()
     
-    df_obs_input = df_final[df_final['Status'] != "OK"].copy()
+    # Agora incluímos todos os registros (incluindo OK) para o resumo
+    df_obs_input = df_final.copy()
     if not df_obs_input.empty:
         df_obs_input['Linha_Formatada'] = df_obs_input.apply(formatar_linha_observacao, axis=1)
+        # O x.unique() garante que se tivermos 3 componentes OK, apareça apenas uma vez "OK"
+        # Se tivermos OK e Divergências, aparecerá "OK | Frete Peso - Divergência..."
         df_resumo = df_obs_input.groupby('Embarque ID')['Linha_Formatada'].apply(lambda x: " | ".join(x.unique())).reset_index()
         df_resumo.columns = ['Embarque', 'Observação']
     else:
@@ -261,12 +264,8 @@ modulo = st.sidebar.radio("Navegação", ["Auditoria de Frete"])
 if modulo == "Auditoria de Frete":
     st.title("Módulo de Extração Analítica")
     
-    # -------------------------------------------------------------------------
-    # CRIAÇÃO DAS 3 ABAS
-    # -------------------------------------------------------------------------
     tab_cte, tab_emb, tab_cruzamento = st.tabs(["📦 Pré-Conhecimentos", "🚢 Embarques Globais", "🔗 Cruzamento Auditoria"])
 
-    # --- ABA 1: CT-E ---
     with tab_cte:
         arquivo_cte = st.file_uploader("Upload CT-e", type=['xlsx', 'csv'], key="u_cte")
         if arquivo_cte and st.button("🚀 Analisar Arquivo CT-e"):
@@ -279,7 +278,6 @@ if modulo == "Auditoria de Frete":
                     excel_cte = gerar_excel_colorido(df_cte)
                     st.download_button("⬇️ Baixar Excel Analítico (CT-e)", data=excel_cte, file_name="Auditoria_CTE.xlsx")
 
-    # --- ABA 2: EMBARQUES ---
     with tab_emb:
         arquivo_emb = st.file_uploader("Upload Embarques", type=['xlsx', 'csv'], key="u_emb")
         if arquivo_emb:
@@ -320,9 +318,8 @@ if modulo == "Auditoria de Frete":
                         file_name=f"Relatorio_Embarque_{datetime.date.today()}.xlsx"
                     )
 
-    # --- ABA 3: CRUZAMENTO CORRIGIDO ---
     with tab_cruzamento:
-        st.info("Cruze o relatório gerado na aba anterior com o Relatório Completo do sistema para obter a visão unificada.")
+        st.info("Cruze o relatório gerado na aba anterior com o Relatório Completo do sistema.")
         col_cruz1, col_cruz2 = st.columns(2)
         
         with col_cruz1:
@@ -333,59 +330,50 @@ if modulo == "Auditoria de Frete":
         if arq_divergencias and arq_relatorio:
             if st.button("🔗 Processar Cruzamento (PROCV)"):
                 try:
-                    with st.spinner("Lendo arquivos e executando cruzamento..."):
-                        # Leitura da aba de Observações
+                    with st.spinner("Executando cruzamento..."):
                         try:
                             df_resumo = pd.read_excel(arq_divergencias, sheet_name='Resumo Observações', dtype=str)
                         except:
                             df_resumo = pd.read_excel(arq_divergencias, dtype=str)
                             
                         if 'Embarque' not in df_resumo.columns or 'Observação' not in df_resumo.columns:
-                            st.error("O primeiro arquivo não possui as colunas esperadas. Use o arquivo unificado baixado na Aba 2.")
+                            st.error("O arquivo 1 não possui as colunas 'Embarque' ou 'Observação'.")
                         else:
-                            # Leitura do sistema
                             if arq_relatorio.name.endswith('.csv'):
                                 df_sistema = pd.read_csv(arq_relatorio, dtype=str)
                             else:
                                 df_sistema = pd.read_excel(arq_relatorio, dtype=str)
 
                             if len(df_sistema.columns) >= 20:
-                                nome_coluna_t = df_sistema.columns[19] # Índice 19 corresponde à Coluna T
+                                nome_coluna_t = df_sistema.columns[19]
                                 
-                                # FUNÇÃO AGRESSIVA DE LIMPEZA PARA GARANTIR MATCH DO PROCV
                                 def padronizar_chave(valor):
                                     if pd.isna(valor): return ""
                                     v = str(valor).strip().upper()
                                     if v.endswith('.0'): v = v[:-2]
-                                    if v.isdigit(): return str(int(v)) # Remove Zeros à esquerda (Ex: 0090075 -> 90075)
+                                    if v.isdigit(): return str(int(v))
                                     return v
                                     
-                                # Cria colunas temporárias invisíveis apenas para fazer o vínculo
                                 df_sistema['_chave_procv'] = df_sistema.iloc[:, 19].apply(padronizar_chave)
                                 df_resumo['_chave_procv'] = df_resumo['Embarque'].apply(padronizar_chave)
                                 
-                                # Renomeia a observação para não causar conflito com colunas já existentes no sistema
                                 df_resumo.rename(columns={'Observação': 'Observação Auditoria'}, inplace=True)
 
-                                # Executa o Merge (PROCV)
                                 df_cruzado = pd.merge(df_sistema, df_resumo[['_chave_procv', 'Observação Auditoria']], 
                                                       on='_chave_procv', how='left')
                                 
-                                # DELETA APENAS A COLUNA TEMPORÁRIA. Nenhuma coluna original é afetada.
                                 df_cruzado.drop(columns=['_chave_procv'], inplace=True)
                                 
-                                # Preenche dados sem divergência com "-"
+                                # Agora o preenchimento padrão é "-" apenas para o que realmente não foi analisado
                                 df_cruzado['Observação Auditoria'] = df_cruzado['Observação Auditoria'].fillna("-")
                                 
-                                st.success(f"Cruzamento concluído com sucesso usando a coluna '{nome_coluna_t}'!")
+                                st.success(f"Cruzamento concluído!")
                                 st.dataframe(df_cruzado.head(50), use_container_width=True)
 
-                                # Exportação
                                 output_cruz = io.BytesIO()
                                 with pd.ExcelWriter(output_cruz, engine='openpyxl') as writer:
                                     df_cruzado.to_excel(writer, index=False, sheet_name='Base Final')
                                     ws_cruz = writer.sheets['Base Final']
-                                    
                                     fill_cab = PatternFill(start_color="5C2EE9", end_color="5C2EE9", fill_type="solid")
                                     font_cab = Font(color="FFFFFF", bold=True)
                                     for cell in ws_cruz[1]:
@@ -394,10 +382,9 @@ if modulo == "Auditoria de Frete":
                                 st.download_button(
                                     label="⬇️ Baixar Base Final Cruzada",
                                     data=output_cruz.getvalue(),
-                                    file_name=f"Resultado_Final_TMS_{datetime.date.today()}.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    file_name=f"Resultado_Final_TMS_{datetime.date.today()}.xlsx"
                                 )
                             else:
-                                st.error(f"O Relatório do sistema tem apenas {len(df_sistema.columns)} colunas. A Coluna T é a 20ª coluna, o arquivo está fora do padrão.")
+                                st.error("O Relatório do sistema tem menos de 20 colunas.")
                 except Exception as e:
-                    st.error(f"Erro no processamento: {e}")
+                    st.error(f"Erro: {e}")

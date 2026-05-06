@@ -127,13 +127,18 @@ def extrair_dados_embarque(linhas):
     for i, row in enumerate(linhas):
         linha = [str(x).strip() for x in row]
         if not any(linha): continue
+        
+        # CABEÇALHO DO EMBARQUE: Alterado para priorizar a coluna "Número" do espelho em vez de "Embarque" (ID)
         if "Embarque" in linha and "Transportadora" in linha:
-            idx_emb = linha.index("Embarque")
+            # Pega o Número se existir, senão faz fallback para Embarque
+            idx_num_real = linha.index("Número") if "Número" in linha else linha.index("Embarque")
             idx_dt = linha.index("Dt. criação") if "Dt. criação" in linha else -1
             idx_transp = linha.index("Transportadora")
+            
             if i + 1 < len(linhas):
                 sub = [str(x).strip() for x in linhas[i+1]]
-                if len(sub) > idx_emb: cur_emb = sub[idx_emb].replace(".0", "")
+                if len(sub) > idx_num_real: 
+                    cur_emb = sub[idx_num_real].replace(".0", "")
                 if idx_dt != -1 and len(sub) > idx_dt:
                     cands_dt = [str(x).strip() for x in sub[idx_dt:idx_dt+5] if str(x).strip()]
                     if cands_dt: cur_dt_criacao = formatar_data_excel_somente_data(cands_dt[0])
@@ -315,13 +320,13 @@ if modulo == "Auditoria de Frete":
                         file_name=f"Relatorio_Embarque_{datetime.date.today()}.xlsx"
                     )
 
-    # --- ABA 3: CRUZAMENTO (NOVA) ---
+    # --- ABA 3: CRUZAMENTO CORRIGIDO ---
     with tab_cruzamento:
         st.info("Cruze o relatório gerado na aba anterior com o Relatório Completo do sistema para obter a visão unificada.")
         col_cruz1, col_cruz2 = st.columns(2)
         
         with col_cruz1:
-            arq_divergencias = st.file_uploader("1️⃣ Arquivo Gerado (Com a aba Resumo Observações)", type=['xlsx'], key="u_div")
+            arq_divergencias = st.file_uploader("1️⃣ Arquivo Gerado (Aba Resumo Observações)", type=['xlsx'], key="u_div")
         with col_cruz2:
             arq_relatorio = st.file_uploader("2️⃣ Relatório do Sistema (Embarque na Coluna T)", type=['xlsx', 'csv'], key="u_rel")
             
@@ -329,64 +334,70 @@ if modulo == "Auditoria de Frete":
             if st.button("🔗 Processar Cruzamento (PROCV)"):
                 try:
                     with st.spinner("Lendo arquivos e executando cruzamento..."):
-                        # 1. Lê a aba correta do arquivo gerado pelo nosso código
+                        # Leitura da aba de Observações
                         try:
                             df_resumo = pd.read_excel(arq_divergencias, sheet_name='Resumo Observações', dtype=str)
                         except:
-                            # Fallback se tiver outro nome
                             df_resumo = pd.read_excel(arq_divergencias, dtype=str)
                             
                         if 'Embarque' not in df_resumo.columns or 'Observação' not in df_resumo.columns:
-                            st.error("O primeiro arquivo não possui as colunas 'Embarque' ou 'Observação'. Faça o upload do arquivo gerado na aba anterior.")
+                            st.error("O primeiro arquivo não possui as colunas esperadas. Use o arquivo unificado baixado na Aba 2.")
                         else:
-                            # 2. Lê o relatório completo do sistema
+                            # Leitura do sistema
                             if arq_relatorio.name.endswith('.csv'):
                                 df_sistema = pd.read_csv(arq_relatorio, dtype=str)
                             else:
                                 df_sistema = pd.read_excel(arq_relatorio, dtype=str)
 
-                            # 3. Verifica se tem pelo menos 20 colunas (A=1 ... T=20 -> index 19)
                             if len(df_sistema.columns) >= 20:
-                                # A coluna T é o índice 19 (O Pandas conta a partir do 0)
-                                nome_coluna_t = df_sistema.columns[19]
+                                nome_coluna_t = df_sistema.columns[19] # Índice 19 corresponde à Coluna T
                                 
-                                # Limpeza para o PROCV bater perfeitamente
-                                df_resumo['Embarque'] = df_resumo['Embarque'].str.strip().str.replace(".0", "", regex=False)
-                                df_sistema[nome_coluna_t] = df_sistema[nome_coluna_t].str.strip().str.replace(".0", "", regex=False)
+                                # FUNÇÃO AGRESSIVA DE LIMPEZA PARA GARANTIR MATCH DO PROCV
+                                def padronizar_chave(valor):
+                                    if pd.isna(valor): return ""
+                                    v = str(valor).strip().upper()
+                                    if v.endswith('.0'): v = v[:-2]
+                                    if v.isdigit(): return str(int(v)) # Remove Zeros à esquerda (Ex: 0090075 -> 90075)
+                                    return v
+                                    
+                                # Cria colunas temporárias invisíveis apenas para fazer o vínculo
+                                df_sistema['_chave_procv'] = df_sistema.iloc[:, 19].apply(padronizar_chave)
+                                df_resumo['_chave_procv'] = df_resumo['Embarque'].apply(padronizar_chave)
                                 
-                                # 4. O Merge (PROCV) propriamente dito - Left Join no relatório do sistema
-                                df_cruzado = pd.merge(df_sistema, df_resumo[['Embarque', 'Observação']], 
-                                                      left_on=nome_coluna_t, right_on='Embarque', how='left')
-                                
-                                # Remove a coluna duplicada gerada pelo merge
-                                df_cruzado.drop(columns=['Embarque'], inplace=True, errors='ignore')
-                                
-                                # Quem não teve divergência mapeada fica com status limpo
-                                df_cruzado['Observação'] = df_cruzado['Observação'].fillna("-")
-                                
-                                st.success(f"Cruzamento concluído! O PROCV foi feito baseando-se na Coluna T ('{nome_coluna_t}').")
-                                st.dataframe(df_cruzado.head(50), use_container_width=True) # Mostra uma amostra
+                                # Renomeia a observação para não causar conflito com colunas já existentes no sistema
+                                df_resumo.rename(columns={'Observação': 'Observação Auditoria'}, inplace=True)
 
-                                # 5. Gerar para Download
+                                # Executa o Merge (PROCV)
+                                df_cruzado = pd.merge(df_sistema, df_resumo[['_chave_procv', 'Observação Auditoria']], 
+                                                      on='_chave_procv', how='left')
+                                
+                                # DELETA APENAS A COLUNA TEMPORÁRIA. Nenhuma coluna original é afetada.
+                                df_cruzado.drop(columns=['_chave_procv'], inplace=True)
+                                
+                                # Preenche dados sem divergência com "-"
+                                df_cruzado['Observação Auditoria'] = df_cruzado['Observação Auditoria'].fillna("-")
+                                
+                                st.success(f"Cruzamento concluído com sucesso usando a coluna '{nome_coluna_t}'!")
+                                st.dataframe(df_cruzado.head(50), use_container_width=True)
+
+                                # Exportação
                                 output_cruz = io.BytesIO()
                                 with pd.ExcelWriter(output_cruz, engine='openpyxl') as writer:
-                                    df_cruzado.to_excel(writer, index=False, sheet_name='Relatorio Cruzado')
+                                    df_cruzado.to_excel(writer, index=False, sheet_name='Base Final')
+                                    ws_cruz = writer.sheets['Base Final']
                                     
-                                    # Formatação básica de cabeçalho
-                                    ws_cruz = writer.sheets['Relatorio Cruzado']
                                     fill_cab = PatternFill(start_color="5C2EE9", end_color="5C2EE9", fill_type="solid")
                                     font_cab = Font(color="FFFFFF", bold=True)
                                     for cell in ws_cruz[1]:
-                                        cell.fill = fill_cab
-                                        cell.font = font_cab
+                                        cell.fill = fill_cab; cell.font = font_cab
 
                                 st.download_button(
-                                    label="⬇️ Baixar Relatório Cruzado Completo",
+                                    label="⬇️ Baixar Base Final Cruzada",
                                     data=output_cruz.getvalue(),
-                                    file_name=f"Relatorio_Final_Auditoria_{datetime.date.today()}.xlsx",
+                                    file_name=f"Resultado_Final_TMS_{datetime.date.today()}.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                 )
                             else:
-                                st.error(f"Erro: O Relatório do sistema tem apenas {len(df_sistema.columns)} colunas. A Coluna T seria a 20ª coluna, portanto ele não está no padrão esperado.")
+                                st.error(f"O Relatório do sistema tem apenas {len(df_sistema.columns)} colunas. A Coluna T é a 20ª coluna, o arquivo está fora do padrão.")
                 except Exception as e:
-                    st.error(f"Ocorreu um erro no cruzamento: {e}")
+                    st.error(f"Erro no processamento: {e}")
